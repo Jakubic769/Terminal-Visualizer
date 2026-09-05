@@ -1,25 +1,22 @@
-"""Windows GSMTC metadata reader with cached media identity and a smooth timeline.
+"""Robust Windows GSMTC metadata/timeline reader.
 
-GSMTC exposes media properties separately from the timeline. Some applications
-(such as Spotify/Edge) can temporarily fail or return incomplete media
-properties while the timeline remains valid, so the reader keeps the last good
-artist/title/duration and only refreshes them when needed.
+Keeps compatibility with different winsdk builds: optional timeline fields are
+read with getattr, while title/artist/duration remain cached through transient
+GSMTC failures.
 """
 import asyncio
-from datetime import timezone
 import time
-
 
 _CACHE = {
     "source": "",
-    "track_key": "",
     "artist": "",
     "title": "",
     "duration": 0.0,
-    "last_media_refresh": 0.0,
+    "track_key": "",
+    "last_refresh": 0.0,
 }
 
-MEDIA_REFRESH_INTERVAL = 0.75
+MEDIA_REFRESH_INTERVAL = 0.50
 
 
 def _seconds(value):
@@ -29,139 +26,116 @@ def _seconds(value):
         return 0.0
 
 
-def _timestamp_seconds(value):
-    """Convert WinRT DateTimeOffset-like value to POSIX seconds when possible."""
-    if value is None:
-        return None
-    try:
-        return value.timestamp()
-    except Exception:
-        pass
-    try:
-        if getattr(value, "tzinfo", None) is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).timestamp()
-    except Exception:
-        return None
-
-
-async def _get_current_session():
-    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as MediaManager
-    manager = await MediaManager.request_async()
-    return manager.get_current_session()
-
-
-async def _get_media_properties(session):
-    return await session.try_get_media_properties_async()
+def _status_name(status):
+    name = getattr(status, "name", None)
+    if name:
+        return str(name).lower()
+    text = str(status or "")
+    return text.rsplit(".", 1)[-1].lower()
 
 
 def _duration_from_timeline(timeline):
-    start = _seconds(timeline.start_time)
-    end = _seconds(timeline.end_time)
-    max_seek = _seconds(timeline.max_seek_time)
-    candidates = []
+    """Get duration without assuming newer optional GSMTC members exist."""
+    start = _seconds(getattr(timeline, "start_time", None))
+    end = _seconds(getattr(timeline, "end_time", None))
+    max_seek = _seconds(getattr(timeline, "max_seek_time", None))
+
     if end > start:
-        candidates.append(end - start)
+        return end - start
     if max_seek > start:
-        candidates.append(max_seek - start)
+        return max_seek - start
     if max_seek > 0.0 and start == 0.0:
-        candidates.append(max_seek)
-    return max(candidates, default=0.0)
+        return max_seek
+    return 0.0
 
 
 async def _get_media_info_async():
-    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus
+    from winsdk.windows.media.control import (
+        GlobalSystemMediaTransportControlsSessionManager as MediaManager,
+    )
 
-    session = await _get_current_session()
+    manager = await MediaManager.request_async()
+    session = manager.get_current_session()
     if session is None:
         return None
 
+    source = str(getattr(session, "source_app_user_model_id", "") or "")
     timeline = session.get_timeline_properties()
-    playback = session.get_playback_info()
-    source = session.source_app_user_model_id or ""
 
-    # Timeline reads are synchronous and cheap. Media properties are remote/
-    # async and occasionally fail while apps are changing tracks, so refresh
-    # them independently and retain the previous good values on failure.
-    now = time.monotonic()
+    # Media properties are the only potentially slow/fragile request. Try it,
+    # but never let it hide timeline data or cached metadata.
+    artist = ""
+    title = ""
     try:
-        candidate_duration = _duration_from_timeline(timeline)
-    except Exception:
-        candidate_duration = 0.0
-
-    media_needs_refresh = (
-        source != _CACHE["source"]
-        or not _CACHE["title"]
-        or (now - _CACHE["last_media_refresh"] >= MEDIA_REFRESH_INTERVAL)
-    )
-
-    if media_needs_refresh:
-        try:
-            info = await _get_media_properties(session)
-            artist = (getattr(info, "artist", None) or "").strip()
-            title = (getattr(info, "title", None) or "").strip()
-            _CACHE["source"] = source
-            if artist or title:
-                _CACHE["artist"] = artist or "Nieznany artysta"
-                _CACHE["title"] = title or "Nieznany tytul"
-            if candidate_duration > 0.0:
-                _CACHE["duration"] = max(_CACHE["duration"], candidate_duration)
-        except Exception:
-            # Keep the old metadata. A transient GSMTC media-properties failure
-            # must never make the title disappear from the UI.
-            _CACHE["source"] = source
-        finally:
-            _CACHE["last_media_refresh"] = now
-
-    if candidate_duration > 0.0:
-        # Duration should only grow during the life of a track. This prevents a
-        # temporary zero/short browser timeline from wiping an already-known
-        # duration.
-        _CACHE["duration"] = max(_CACHE["duration"], candidate_duration)
-
-    start = _seconds(timeline.start_time)
-    position = _seconds(timeline.position)
-    min_seek = _seconds(timeline.min_seek_time)
-    max_seek = _seconds(timeline.max_seek_time)
-    duration = _CACHE["duration"]
-
-    status = playback.playback_status
-    status_name = getattr(status, "name", "") or str(status).split(".")[-1]
-    is_playing = status == PlaybackStatus.playing or status_name.lower() == "playing"
-
-    playback_rate = 1.0
-    try:
-        playback_rate = float(playback.playback_rate)
-        if playback_rate <= 0.0:
-            playback_rate = 1.0
+        media = await session.try_get_media_properties_async()
+        artist = str(getattr(media, "artist", "") or "").strip()
+        title = str(getattr(media, "title", "") or "").strip()
     except Exception:
         pass
 
-    updated_at = _timestamp_seconds(getattr(timeline, "last_updated_time", None))
-    artist = _CACHE["artist"] or "Nieznany artysta"
-    title = _CACHE["title"] or "Nieznany tytul"
-    track_key = f"{source}|{artist}|{title}"
+    position = _seconds(getattr(timeline, "position", None))
+    duration = _duration_from_timeline(timeline)
 
-    # Position is already reported in the media timeline coordinate system.
-    # Keep it as-is; MinSeekTime is a seek boundary, not a value to subtract.
-    position = max(position, 0.0)
-    if duration > 0.0:
-        position = min(position, duration)
+    playback = None
+    try:
+        playback = session.get_playback_info()
+    except Exception:
+        pass
+
+    status_name = _status_name(getattr(playback, "playback_status", None)) if playback else ""
+    is_playing = status_name in {"playing", "1"}
+
+    rate = 1.0
+    try:
+        rate = float(getattr(playback, "playback_rate", 1.0) or 1.0)
+        if rate <= 0:
+            rate = 1.0
+    except Exception:
+        rate = 1.0
+
+    now = time.monotonic()
+    key_candidate = f"{source}|{artist}|{title}" if (artist or title) else ""
+
+    # Update cache only with usable values. A transient empty response must not
+    # erase a perfectly valid title or duration from the previous poll.
+    if source and source != _CACHE["source"]:
+        _CACHE["source"] = source
+        _CACHE["artist"] = ""
+        _CACHE["title"] = ""
+        _CACHE["duration"] = 0.0
+        _CACHE["track_key"] = ""
+
+    if artist:
+        _CACHE["artist"] = artist
+    if title:
+        _CACHE["title"] = title
+
+    # Duration normally remains fixed for a track. Grow it when a later poll
+    # reveals the actual seek range; never erase it because of a temporary 0.
+    if duration > 0:
+        if key_candidate and key_candidate != _CACHE["track_key"]:
+            _CACHE["duration"] = duration
+        else:
+            _CACHE["duration"] = max(_CACHE["duration"], duration)
+
+    cached_artist = _CACHE["artist"] or "Nieznany artysta"
+    cached_title = _CACHE["title"] or "Nieznany tytul"
+    track_key = f"{source}|{cached_artist}|{cached_title}"
+    _CACHE["track_key"] = track_key
+    _CACHE["last_refresh"] = now
 
     return {
-        "artist": artist,
-        "title": title,
+        "artist": cached_artist,
+        "title": cached_title,
         "position": position,
-        "duration": duration,
+        "duration": _CACHE["duration"],
         "track_key": track_key,
         "source": source,
-        "playback_status": status_name.lower(),
+        "playback_status": status_name,
         "is_playing": is_playing,
-        "playback_rate": playback_rate,
-        "timeline_updated_at": updated_at,
-        "min_seek": min_seek,
-        "max_seek": max_seek,
-        "timeline_start": start,
+        "playback_rate": rate,
+        "timeline_start": _seconds(getattr(timeline, "start_time", None)),
+        "max_seek": _seconds(getattr(timeline, "max_seek_time", None)),
     }
 
 
@@ -177,6 +151,17 @@ def get_metadata():
     try:
         return asyncio.run(_get_media_info_async())
     except Exception:
-        # Do not poison the UI with an exception when GSMTC is temporarily
-        # unavailable. The MetadataWorker will simply keep its last clock.
+        # Keep the last good values visible even if GSMTC is temporarily busy.
+        if _CACHE["artist"] or _CACHE["title"] or _CACHE["duration"] > 0:
+            return {
+                "artist": _CACHE["artist"] or "Nieznany artysta",
+                "title": _CACHE["title"] or "Nieznany tytul",
+                "position": 0.0,
+                "duration": _CACHE["duration"],
+                "track_key": _CACHE["track_key"],
+                "source": _CACHE["source"],
+                "playback_status": "",
+                "is_playing": False,
+                "playback_rate": 1.0,
+            }
         return None
