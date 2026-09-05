@@ -61,6 +61,14 @@ class AudioWorker(threading.Thread):
 
 
 class MetadataWorker(threading.Thread):
+    """Poll media metadata while keeping a smooth, stable local timeline.
+
+    Windows GSMTC (especially with Spotify) can briefly return stale position
+    values and can also change timeline timestamps without changing tracks.
+    We therefore key a track only by source+artist+title and reconcile raw
+    positions against our predicted timeline instead of accepting every sample.
+    """
+
     def __init__(self, provider):
         super().__init__(daemon=True)
         self.provider = provider
@@ -68,6 +76,74 @@ class MetadataWorker(threading.Thread):
         self.data = None
         self.polled_at = 0.0
         self._stop = threading.Event()
+        self._pending_restart = None
+
+    @staticmethod
+    def _track_key(info):
+        return info.get("track_key") or (info.get("artist", ""), info.get("title", ""))
+
+    def _reconcile(self, info, now):
+        info = dict(info)
+        old = self.data
+        if not old:
+            return info
+
+        old_key = self._track_key(old)
+        new_key = self._track_key(info)
+        if old_key != new_key:
+            self._pending_restart = None
+            return info
+
+        old_pos = max(0.0, float(old.get("position", 0.0) or 0.0))
+        old_duration = max(0.0, float(old.get("duration", 0.0) or 0.0))
+        new_pos = max(0.0, float(info.get("position", 0.0) or 0.0))
+        new_duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
+        elapsed = max(0.0, now - self.polled_at)
+        predicted = old_pos + elapsed
+
+        # Duration should not shrink because Spotify/GSMTC emitted a temporary
+        # zero/short timeline. Once a real duration is known, keep it stable
+        # until the track actually changes.
+        if old_duration > 0.0 and (new_duration <= 0.0 or new_duration < old_duration * 0.75):
+            info["duration"] = old_duration
+            new_duration = old_duration
+
+        # Normal samples: use the fresh position to keep sync tight. Small
+        # backwards jitter is ignored, which prevents 0:02 -> 0:01 -> 0:02.
+        drift = new_pos - predicted
+        if abs(drift) <= 1.5:
+            info["position"] = max(old_pos, new_pos)
+            self._pending_restart = None
+            return info
+
+        # A large forward move is usually a real seek/skip. Accept it.
+        if drift > 1.5:
+            info["position"] = new_pos
+            self._pending_restart = None
+            return info
+
+        # A large backwards jump can be either a real restart/seek or one bad
+        # GSMTC sample. Require two consecutive low samples before accepting a
+        # restart; otherwise keep the predicted timeline moving forward.
+        if new_pos <= 2.0 and predicted >= 5.0:
+            if self._pending_restart is None:
+                self._pending_restart = (now, new_pos)
+                info["position"] = predicted
+                return info
+            started_at, previous_low = self._pending_restart
+            if now - started_at >= 0.20 and new_pos <= 2.5 and abs(new_pos - previous_low) <= 1.5:
+                self._pending_restart = None
+                info["position"] = new_pos
+                return info
+            info["position"] = predicted
+            return info
+
+        # Other backward seeks are accepted only when the new position remains
+        # consistently different; one stale sample should never move the clock
+        # backwards.
+        self._pending_restart = (now, new_pos)
+        info["position"] = predicted
+        return info
 
     def run(self):
         if self.provider is None:
@@ -75,32 +151,18 @@ class MetadataWorker(threading.Thread):
         while not self._stop.is_set():
             try:
                 info = self.provider()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 info = None
             now = time.time()
             with self.lock:
                 if info is not None:
-                    info = dict(info)
-                    old = self.data
-                    if old:
-                        old_key = old.get("track_key") or (old.get("artist"), old.get("title"))
-                        new_key = info.get("track_key") or (info.get("artist"), info.get("title"))
-                        if old_key == new_key:
-                            # GSMTC can briefly report a much older position. Keep the
-                            # timeline monotonic instead of jumping 5+ seconds backwards.
-                            old_display = old.get("position", 0.0) + max(0.0, now - self.polled_at)
-                            new_pos = max(0.0, float(info.get("position", 0.0)))
-                            duration_old = float(old.get("duration", 0.0) or 0.0)
-                            duration_new = float(info.get("duration", 0.0) or 0.0)
-                            near_restart = old_display > 5.0 and new_pos < 2.0
-                            large_regression = new_pos + 1.25 < old_display
-                            if large_regression and not near_restart:
-                                info["position"] = min(old_display, duration_new or old_display)
-                            if duration_old > 0.0 and duration_new < duration_old * 0.75:
-                                info["duration"] = duration_old
-                self.data = info
+                    info = self._reconcile(info, now)
+                self.data = dict(info) if info is not None else self.data
                 self.polled_at = now
-            self._stop.wait(1.0)
+            # 250 ms gives a much tighter timeline than the old 1 second poll
+            # without hammering GSMTC. The display still interpolates between
+            # samples for smooth 60 FPS rendering.
+            self._stop.wait(0.25)
 
     def stop(self):
         self._stop.set()
@@ -111,9 +173,10 @@ class MetadataWorker(threading.Thread):
             polled_at = self.polled_at
         if not data:
             return None
+
         elapsed = max(0.0, time.time() - polled_at)
         pos = float(data.get("position", 0.0)) + elapsed
-        duration = float(data.get("duration", 0.0) or 0.0)
+        duration = max(0.0, float(data.get("duration", 0.0) or 0.0))
         if duration > 0.0:
             pos = min(pos, duration)
         return {

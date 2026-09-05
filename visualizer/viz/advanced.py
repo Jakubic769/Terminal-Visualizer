@@ -243,12 +243,33 @@ class AdvancedVisualizer(BaseVisualizer):
                 pygame.draw.line(surf, theme["secondary"], (x, rect.bottom - h), (x + width, rect.bottom - h), 2)
                 continue
             if mode == "luminous_columns":
-                glow = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-                pygame.draw.rect(glow, (*col, 22), (x - 2, rect.bottom - h, width + 4, h), border_radius=4)
-                surf.blit(glow, (0, 0))
+                # One reusable glow surface per frame instead of allocating a
+                # full-screen surface for every single column. This was the
+                # main source of frame drops with 48+ bars.
+                pass
             pygame.draw.rect(surf, col, (x, rect.bottom - h, width, h), border_radius=3)
             if mode == "cathedral":
                 pygame.draw.line(surf, _mix(col, theme["bg"], 0.35), (x, rect.bottom - h), (x + width, rect.bottom - h), 2)
+        if mode == "luminous_columns":
+            # Draw all glows in a single alpha layer. The old implementation
+            # created one full-size Surface per bar per frame (e.g. ~48
+            # allocations every frame at 60 FPS).
+            glow = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            for i, v in enumerate(bars):
+                if v < 0.04:
+                    continue
+                x = rect.x + i * (width + gap)
+                h = 4 + v * rect.height * 0.78
+                col = bar_color(theme, i, n, v, t)
+                alpha = int(8 + min(28, v * 22))
+                pygame.draw.rect(
+                    glow,
+                    (*col, alpha),
+                    (max(rect.left, x - 2), rect.bottom - h, min(rect.right - x + 2, width + 4), h),
+                    border_radius=4,
+                )
+            surf.blit(glow, (0, 0))
+
         if mode == "pillars_pro":
             pygame.draw.line(surf, _mix(theme["secondary"], theme["bg"], 0.45), (rect.left, rect.bottom - 1), (rect.right, rect.bottom - 1), 2)
 

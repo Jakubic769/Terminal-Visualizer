@@ -23,12 +23,19 @@ async def _get_media_info_async():
     start = timeline.start_time.total_seconds()
     end = timeline.end_time.total_seconds()
 
+    artist = info.artist or "Nieznany artysta"
+    title = info.title or "Nieznany tytul"
+    source = session.source_app_user_model_id or ""
+
+    # Do NOT include timeline start/end in the key. Spotify/GSMTC can refresh
+    # those timestamps without changing the song, which previously looked like
+    # a track change and reset the clock repeatedly.
     return {
-        "artist": info.artist or "Nieznany artysta",
-        "title": info.title or "Nieznany tytul",
+        "artist": artist,
+        "title": title,
         "position": max(position, 0.0),
         "duration": max(duration, 0.0),
-        "track_key": f"{session.source_app_user_model_id}|{info.artist}|{info.title}|{start:.3f}|{end:.3f}",
+        "track_key": f"{source}|{artist}|{title}",
     }
 
 
