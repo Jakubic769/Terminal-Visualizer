@@ -103,6 +103,8 @@ pip install --user .
 
 ### Windows 10/11
 
+**Python 3.9-3.12 is required for the current Windows build.** The Windows audio/metadata dependencies used by this release include `winsdk`, whose published Windows wheels currently go up to CPython 3.12.
+
 Run:
 
 ```bat
@@ -111,7 +113,7 @@ install.bat
 
 The installer automatically:
 
-- checks for Python 3.9+
+- checks for a compatible Python 3.9-3.12 installation
 - creates a dedicated virtual environment
 - installs the required Python packages
 - creates `visualizer.cmd`
@@ -268,11 +270,13 @@ If demo mode works, the issue is most likely related to the selected audio sourc
 
 ### Windows installation issues
 
-Make sure Python 3.9 or newer is installed and available from the terminal:
+Make sure Python 3.9-3.12 is installed and available from the terminal:
 
 ```bat
 python --version
 ```
+
+If several Python versions are installed, `install.bat` will automatically prefer 3.12, then 3.11, 3.10, or 3.9.
 
 Then run the installer again:
 
