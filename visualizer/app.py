@@ -61,89 +61,133 @@ class AudioWorker(threading.Thread):
 
 
 class MetadataWorker(threading.Thread):
-    """Poll media metadata while keeping a smooth, stable local timeline.
+    """Poll Windows/Linux media metadata and expose a smooth playback clock.
 
-    Windows GSMTC (especially with Spotify) can briefly return stale position
-    values and can also change timeline timestamps without changing tracks.
-    We therefore key a track only by source+artist+title and reconcile raw
-    positions against our predicted timeline instead of accepting every sample.
+    The raw GSMTC position is a snapshot. We anchor it to the timestamp at
+    which Windows says the timeline was updated, then extrapolate locally while
+    the session is playing. Missing/failed polls never reset that anchor.
     """
+
+    POLL_INTERVAL = 0.20
+    CLOCK_CORRECTION = 0.18
+    MAX_POSITION_DRIFT = 2.5
+    SEEK_CONFIRMATIONS = 2
 
     def __init__(self, provider):
         super().__init__(daemon=True)
         self.provider = provider
         self.lock = threading.Lock()
         self.data = None
-        self.polled_at = 0.0
+        self.anchor_monotonic = None
+        self.anchor_position = 0.0
+        self.anchor_duration = 0.0
+        self.anchor_playing = False
+        self.anchor_rate = 1.0
         self._stop = threading.Event()
-        self._pending_restart = None
+        self._pending_seek = None
 
     @staticmethod
     def _track_key(info):
         return info.get("track_key") or (info.get("artist", ""), info.get("title", ""))
 
-    def _reconcile(self, info, now):
+    @staticmethod
+    def _safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _predict_locked(self, now):
+        if self.anchor_monotonic is None:
+            return self.anchor_position
+        if not self.anchor_playing:
+            return self.anchor_position
+        elapsed = max(0.0, now - self.anchor_monotonic)
+        return self.anchor_position + elapsed * max(self.anchor_rate, 0.01)
+
+    def _accept_info(self, info, now):
         info = dict(info)
         old = self.data
-        if not old:
-            return info
+        if old is None:
+            position = max(0.0, self._safe_float(info.get("position")))
+            duration = max(0.0, self._safe_float(info.get("duration")))
+            self.anchor_position = position
+            self.anchor_duration = duration
+            self.anchor_monotonic = now
+            self.anchor_playing = bool(info.get("is_playing", True))
+            self.anchor_rate = max(0.01, self._safe_float(info.get("playback_rate"), 1.0))
+            self.data = info
+            return
 
         old_key = self._track_key(old)
         new_key = self._track_key(info)
         if old_key != new_key:
-            self._pending_restart = None
-            return info
+            self._pending_seek = None
+            self.data = info
+            self.anchor_position = max(0.0, self._safe_float(info.get("position")))
+            self.anchor_duration = max(0.0, self._safe_float(info.get("duration")))
+            self.anchor_monotonic = now
+            self.anchor_playing = bool(info.get("is_playing", True))
+            self.anchor_rate = max(0.01, self._safe_float(info.get("playback_rate"), 1.0))
+            return
 
-        old_pos = max(0.0, float(old.get("position", 0.0) or 0.0))
-        old_duration = max(0.0, float(old.get("duration", 0.0) or 0.0))
-        new_pos = max(0.0, float(info.get("position", 0.0) or 0.0))
-        new_duration = max(0.0, float(info.get("duration", 0.0) or 0.0))
-        elapsed = max(0.0, now - self.polled_at)
-        predicted = old_pos + elapsed
+        current_prediction = self._predict_locked(now)
+        raw_position = max(0.0, self._safe_float(info.get("position")))
+        raw_duration = max(0.0, self._safe_float(info.get("duration")))
+        old_duration = max(0.0, self.anchor_duration)
 
-        # Duration should not shrink because Spotify/GSMTC emitted a temporary
-        # zero/short timeline. Once a real duration is known, keep it stable
-        # until the track actually changes.
-        if old_duration > 0.0 and (new_duration <= 0.0 or new_duration < old_duration * 0.75):
-            info["duration"] = old_duration
-            new_duration = old_duration
+        # Never throw away a known duration because a browser/GSMTC poll is
+        # temporarily incomplete. Grow duration immediately when a larger value
+        # appears; this is useful for Edge/YouTube as the seek range becomes ready.
+        duration = max(old_duration, raw_duration)
 
-        # Normal samples: use the fresh position to keep sync tight. Small
-        # backwards jitter is ignored, which prevents 0:02 -> 0:01 -> 0:02.
-        drift = new_pos - predicted
-        if abs(drift) <= 1.5:
-            info["position"] = max(old_pos, new_pos)
-            self._pending_restart = None
-            return info
+        playing = bool(info.get("is_playing", self.anchor_playing))
+        rate = max(0.01, self._safe_float(info.get("playback_rate"), self.anchor_rate or 1.0))
 
-        # A large forward move is usually a real seek/skip. Accept it.
-        if drift > 1.5:
-            info["position"] = new_pos
-            self._pending_restart = None
-            return info
+        drift = raw_position - current_prediction
+        accepted_position = current_prediction
 
-        # A large backwards jump can be either a real restart/seek or one bad
-        # GSMTC sample. Require two consecutive low samples before accepting a
-        # restart; otherwise keep the predicted timeline moving forward.
-        if new_pos <= 2.0 and predicted >= 5.0:
-            if self._pending_restart is None:
-                self._pending_restart = (now, new_pos)
-                info["position"] = predicted
-                return info
-            started_at, previous_low = self._pending_restart
-            if now - started_at >= 0.20 and new_pos <= 2.5 and abs(new_pos - previous_low) <= 1.5:
-                self._pending_restart = None
-                info["position"] = new_pos
-                return info
-            info["position"] = predicted
-            return info
+        if not playing:
+            # Paused/stopped means the clock must stop. Trust the latest Windows
+            # position, but ignore tiny backwards jitter.
+            if abs(drift) <= self.MAX_POSITION_DRIFT:
+                accepted_position = max(0.0, raw_position)
+            else:
+                accepted_position = max(0.0, raw_position)
+            self._pending_seek = None
+        else:
+            # Normal playing: retain smooth local motion and gently correct it.
+            if abs(drift) <= self.MAX_POSITION_DRIFT:
+                accepted_position = current_prediction + drift * self.CLOCK_CORRECTION
+                self._pending_seek = None
+            elif drift > self.MAX_POSITION_DRIFT:
+                # Forward seek/track seek. Accept quickly; don't invent a fake skip.
+                accepted_position = raw_position
+                self._pending_seek = None
+            else:
+                # Backwards movement may be a real seek/restart or a stale sample.
+                # Confirm it twice before jumping backwards.
+                pending = self._pending_seek
+                if pending is None or abs(raw_position - pending[1]) > 1.0:
+                    self._pending_seek = (now, raw_position, 1)
+                else:
+                    count = pending[2] + 1
+                    self._pending_seek = (pending[0], raw_position, count)
+                if self._pending_seek[2] >= self.SEEK_CONFIRMATIONS:
+                    accepted_position = raw_position
+                    self._pending_seek = None
 
-        # Other backward seeks are accepted only when the new position remains
-        # consistently different; one stale sample should never move the clock
-        # backwards.
-        self._pending_restart = (now, new_pos)
-        info["position"] = predicted
-        return info
+        if duration > 0.0:
+            accepted_position = min(accepted_position, duration)
+
+        self.anchor_position = max(0.0, accepted_position)
+        self.anchor_duration = duration
+        self.anchor_monotonic = now
+        self.anchor_playing = playing
+        self.anchor_rate = rate
+        info["position"] = self.anchor_position
+        info["duration"] = duration
+        self.data = info
 
     def run(self):
         if self.provider is None:
@@ -153,37 +197,38 @@ class MetadataWorker(threading.Thread):
                 info = self.provider()
             except Exception:
                 info = None
-            now = time.time()
+            now = time.monotonic()
             with self.lock:
+                # Critical: a failed/empty poll must NOT move the anchor time.
+                # Otherwise the display freezes and then catches up in a jump.
                 if info is not None:
-                    info = self._reconcile(info, now)
-                self.data = dict(info) if info is not None else self.data
-                self.polled_at = now
-            # 250 ms gives a much tighter timeline than the old 1 second poll
-            # without hammering GSMTC. The display still interpolates between
-            # samples for smooth 60 FPS rendering.
-            self._stop.wait(0.25)
+                    self._accept_info(info, now)
+            self._stop.wait(self.POLL_INTERVAL)
 
     def stop(self):
         self._stop.set()
 
     def get_display_position(self):
+        now = time.monotonic()
         with self.lock:
-            data = dict(self.data) if self.data else None
-            polled_at = self.polled_at
-        if not data:
-            return None
-
-        elapsed = max(0.0, time.time() - polled_at)
-        pos = float(data.get("position", 0.0)) + elapsed
-        duration = max(0.0, float(data.get("duration", 0.0) or 0.0))
+            if not self.data:
+                return None
+            position = self._predict_locked(now)
+            duration = max(0.0, self.anchor_duration)
+            data = dict(self.data)
+            playing = self.anchor_playing
+            rate = self.anchor_rate
         if duration > 0.0:
-            pos = min(pos, duration)
+            position = min(position, duration)
+        data["position"] = max(0.0, position)
+        data["duration"] = duration
+        data["is_playing"] = playing
+        data["playback_rate"] = rate
         return {
             "artist": data.get("artist", ""),
             "title": data.get("title", ""),
-            "position": max(0.0, pos),
-            "duration": duration,
+            "position": data["position"],
+            "duration": data["duration"],
         }
 
 
