@@ -93,6 +93,20 @@ def _glow_circle(surf, center, radius, color, width=2, layers=5):
     pygame.draw.circle(surf, color, center, int(radius), width)
 
 
+def _point_pairs(points):
+    """Return pygame-safe integer (x, y) point pairs."""
+    out = []
+    for point in points:
+        if not isinstance(point, (tuple, list)) or len(point) != 2:
+            continue
+        try:
+            x, y = point
+            out.append((int(round(float(x))), int(round(float(y)))))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return out
+
+
 def _smooth_points(values, rect, baseline=None, scale=1.0):
     n = len(values)
     if n == 0:
@@ -162,9 +176,10 @@ class AdvancedVisualizer(BaseVisualizer):
                 c = _mix(theme["primary"], theme["secondary"], color_f)
                 pygame.draw.aalines(surf, c, False, shifted)
         elif mode == "glass_wave":
-            fill = [(rect.x, rect.centery), *pts, (rect.right, rect.centery)]
+            fill = _point_pairs([(rect.x, rect.centery), *pts, (rect.right, rect.centery)])
             overlay = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
-            pygame.draw.polygon(overlay, (*theme["primary"], 28), fill)
+            if len(fill) >= 3:
+                pygame.draw.polygon(overlay, (*theme["primary"], 28), fill)
             surf.blit(overlay, (0, 0))
             pygame.draw.aalines(surf, theme["secondary"], False, pts)
             pygame.draw.aalines(surf, theme["primary"], False, [(x, 2 * rect.centery - y) for x, y in pts])
@@ -211,7 +226,7 @@ class AdvancedVisualizer(BaseVisualizer):
                 h *= 0.6 + 0.4 * math.sin((i / max(1, n - 1)) * math.pi)
             if mode == "blade_array":
                 lean = (v - 0.5) * 14
-                pygame.draw.polygon(surf, col, [(x + width / 2, rect.bottom - h), (x + width + lean, rect.bottom), (x, rect.bottom)], 2)
+                pygame.draw.polygon(surf, col, _point_pairs([(x + width / 2, rect.bottom - h), (x + width + lean, rect.bottom), (x, rect.bottom)]), 2)
                 continue
             if mode == "oscillo_pro":
                 y0 = rect.centery
@@ -420,7 +435,7 @@ class AdvancedVisualizer(BaseVisualizer):
             p2 = (cx + math.cos(a) * r1, cy + math.sin(a) * r1)
             c = bar_color(theme, i, n, v, t)
             if mode == "facet":
-                pygame.draw.polygon(surf, c, [p1, (p2[0] + w, p2[1]), (cx + math.cos(a + 0.18) * r1, cy + math.sin(a + 0.18) * r1)], 1)
+                pygame.draw.polygon(surf, c, _point_pairs([p1, (p2[0] + w, p2[1]), (cx + math.cos(a + 0.18) * r1, cy + math.sin(a + 0.18) * r1)]), 1)
             elif mode == "prism_core":
                 pygame.draw.line(surf, c, p1, p2, 2)
                 if i % 3 == 0:
