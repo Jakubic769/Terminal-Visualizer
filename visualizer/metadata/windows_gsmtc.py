@@ -20,12 +20,15 @@ async def _get_media_info_async():
 
     position = timeline.position.total_seconds()
     duration = (timeline.end_time - timeline.start_time).total_seconds()
+    start = timeline.start_time.total_seconds()
+    end = timeline.end_time.total_seconds()
 
     return {
         "artist": info.artist or "Nieznany artysta",
         "title": info.title or "Nieznany tytul",
         "position": max(position, 0.0),
         "duration": max(duration, 0.0),
+        "track_key": f"{session.source_app_user_model_id}|{info.artist}|{info.title}|{start:.3f}|{end:.3f}",
     }
 
 

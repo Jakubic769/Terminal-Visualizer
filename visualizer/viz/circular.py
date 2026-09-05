@@ -18,7 +18,7 @@ class CircularVisualizer(BaseVisualizer):
         base_r = min(rect.width, rect.height) * 0.18
         max_len = min(rect.width, rect.height) * 0.32
 
-        pygame.draw.circle(surf, theme.get("secondary", theme["primary"]), (cx, cy), int(base_r), 2)
+        pygame.draw.circle(surf, theme.get("secondary") or theme.get("primary", (235, 235, 235)), (cx, cy), int(base_r), 2)
 
         for i, v in enumerate(bars):
             v = min(1.0, v)

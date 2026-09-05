@@ -335,3 +335,14 @@ This project is released under the **MIT License**. See [`LICENSE`](LICENSE) for
 ---
 
 Made for people who think a terminal should be allowed to have a little rhythm. 🎧⚡
+
+## Nowe sterowanie i efekty
+
+Wizualizator zawiera teraz 50 dodatkowych stylów (łącznie 62) oraz 25 dodatkowych motywów kolorystycznych.
+
+- `T` — włącza/wyłącza audio-reaktywny efekt przezroczystości.
+- `[` / `]` — zmniejsza/zwiększa czułość przezroczystości.
+- `Shift` + `Góra/Dół` — zmniejsza/zwiększa czułość przezroczystości.
+- `Góra/Dół` — nadal steruje czułością audio.
+- Pozycja utworu jest wygładzana, aby chwilowe błędne odczyty Windows GSMTC nie cofały licznika. Czas trwania jest stabilizowany dla bieżącego utworu.
+

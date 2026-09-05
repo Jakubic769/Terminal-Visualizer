@@ -28,6 +28,8 @@ DEFAULTS = {
     "n_bars": 48,
     "fps": 60,
     "fullscreen": False,
+    "transparency_enabled": False,
+    "transparency_sensitivity": 1.0,
 }
 
 

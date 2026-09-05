@@ -41,5 +41,5 @@ class KaleidoscopeVisualizer(BaseVisualizer):
                 color = bar_color(theme, idx, n, v, ctx["t"])
                 pygame.draw.circle(surf, color, (int(x), int(y)), 3)
             if len(points_top) > 1:
-                color = theme.get("secondary", theme["primary"])
+                color = theme.get("secondary") or theme.get("primary", (235, 235, 235))
                 pygame.draw.aalines(surf, color, False, points_top)

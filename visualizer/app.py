@@ -7,7 +7,7 @@ import pygame
 
 from . import config as cfgmod
 from .dsp import SpectrumAnalyzer, rms
-from .themes import THEMES, THEME_ORDER, make_custom_theme
+from .themes import THEMES, THEME_ORDER, make_custom_theme, normalize_theme
 from .viz import VISUALIZERS
 
 ANALYSIS_WINDOW = 2048
@@ -17,7 +17,8 @@ BOTTOM_BAR_H = 74
 HELP_LINES = [
     "TAB / -> nastepny styl   <- poprzedni styl",
     "C zmien motyw kolorow (Shift+C: wstecz)",
-    "STRZALKA GORA/DOL: czulosc      F: pelny ekran",
+    "GORA/DOL: czulosc audio   T: przezroczystosc   Shift+GORA/DOL: czulosc przezroczystosci",
+    "[ / ]: czulosc przezroczystosci    F/F11: pelny ekran",
     "H: pokaz/ukryj podpowiedz       ESC/Q: wyjscie",
 ]
 
@@ -76,9 +77,29 @@ class MetadataWorker(threading.Thread):
                 info = self.provider()
             except Exception:  # noqa: BLE001
                 info = None
+            now = time.time()
             with self.lock:
+                if info is not None:
+                    info = dict(info)
+                    old = self.data
+                    if old:
+                        old_key = old.get("track_key") or (old.get("artist"), old.get("title"))
+                        new_key = info.get("track_key") or (info.get("artist"), info.get("title"))
+                        if old_key == new_key:
+                            # GSMTC can briefly report a much older position. Keep the
+                            # timeline monotonic instead of jumping 5+ seconds backwards.
+                            old_display = old.get("position", 0.0) + max(0.0, now - self.polled_at)
+                            new_pos = max(0.0, float(info.get("position", 0.0)))
+                            duration_old = float(old.get("duration", 0.0) or 0.0)
+                            duration_new = float(info.get("duration", 0.0) or 0.0)
+                            near_restart = old_display > 5.0 and new_pos < 2.0
+                            large_regression = new_pos + 1.25 < old_display
+                            if large_regression and not near_restart:
+                                info["position"] = min(old_display, duration_new or old_display)
+                            if duration_old > 0.0 and duration_new < duration_old * 0.75:
+                                info["duration"] = duration_old
                 self.data = info
-                self.polled_at = time.time()
+                self.polled_at = now
             self._stop.wait(1.0)
 
     def stop(self):
@@ -86,19 +107,20 @@ class MetadataWorker(threading.Thread):
 
     def get_display_position(self):
         with self.lock:
-            data = self.data
+            data = dict(self.data) if self.data else None
             polled_at = self.polled_at
         if not data:
             return None
-        elapsed = time.time() - polled_at
-        pos = data["position"] + elapsed
-        if data["duration"]:
-            pos = min(pos, data["duration"])
+        elapsed = max(0.0, time.time() - polled_at)
+        pos = float(data.get("position", 0.0)) + elapsed
+        duration = float(data.get("duration", 0.0) or 0.0)
+        if duration > 0.0:
+            pos = min(pos, duration)
         return {
-            "artist": data["artist"],
-            "title": data["title"],
+            "artist": data.get("artist", ""),
+            "title": data.get("title", ""),
             "position": max(0.0, pos),
-            "duration": data["duration"],
+            "duration": duration,
         }
 
 
@@ -132,12 +154,21 @@ def run_app(capture, metadata_fn, args, source_label):
         style_index = _resolve_style(args.style, style_names, style_index)
     visualizers = [cls() for cls in VISUALIZERS]
 
-    custom_rgb = _parse_color(args.color) or (tuple(cfg["custom_color"]) if cfg.get("custom_color") else None)
+    custom_rgb = _parse_color(args.color)
+    if custom_rgb is None and cfg.get("custom_color") is not None:
+        try:
+            saved_rgb = tuple(int(v) for v in cfg["custom_color"])
+            if len(saved_rgb) == 3 and all(0 <= v <= 255 for v in saved_rgb):
+                custom_rgb = saved_rgb
+        except (TypeError, ValueError):
+            custom_rgb = None
     theme_name = args.theme if args.theme in THEMES else cfg.get("theme", "cava_green")
     if _parse_color(args.color):
         theme_name = "custom"
 
-    sensitivity = cfg.get("sensitivity", 1.0)
+    sensitivity = float(cfg.get("sensitivity", 1.0))
+    transparency_enabled = bool(cfg.get("transparency_enabled", False))
+    transparency_sensitivity = float(cfg.get("transparency_sensitivity", 1.0))
 
     audio_worker = AudioWorker(capture)
     try:
@@ -182,10 +213,23 @@ def run_app(capture, metadata_fn, args, source_label):
                     back = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
                     theme_name = _cycle_theme(theme_name, back=back)
                     custom_rgb = None
+                elif event.key == pygame.K_t:
+                    transparency_enabled = not transparency_enabled
+                    help_timer = 5.0
                 elif event.key == pygame.K_UP:
-                    sensitivity = min(3.0, sensitivity + 0.1)
+                    if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                        transparency_sensitivity = min(3.0, transparency_sensitivity + 0.1)
+                    else:
+                        sensitivity = min(3.0, sensitivity + 0.1)
                 elif event.key == pygame.K_DOWN:
-                    sensitivity = max(0.2, sensitivity - 0.1)
+                    if pygame.key.get_mods() & pygame.KMOD_SHIFT:
+                        transparency_sensitivity = max(0.1, transparency_sensitivity - 0.1)
+                    else:
+                        sensitivity = max(0.2, sensitivity - 0.1)
+                elif event.key == pygame.K_LEFTBRACKET:
+                    transparency_sensitivity = max(0.1, transparency_sensitivity - 0.1)
+                elif event.key == pygame.K_RIGHTBRACKET:
+                    transparency_sensitivity = min(3.0, transparency_sensitivity + 0.1)
                 elif event.key in (pygame.K_f, pygame.K_F11):
                     fullscreen = not fullscreen
                     if fullscreen:
@@ -222,10 +266,12 @@ def run_app(capture, metadata_fn, args, source_label):
         left_rms = rms(last_stereo[:, 0])
         right_rms = rms(last_stereo[:, 1]) if last_stereo.shape[1] > 1 else left_rms
 
-        theme = make_custom_theme(custom_rgb) if (theme_name == "custom" and custom_rgb) else THEMES[theme_name]
+        theme = normalize_theme(make_custom_theme(custom_rgb) if (theme_name == "custom" and custom_rgb) else THEMES.get(theme_name, THEMES["cava_green"]))
 
         w, h = screen.get_size()
         view_rect = pygame.Rect(0, 0, w, max(1, h - BOTTOM_BAR_H))
+        visual_layer = pygame.Surface((view_rect.width, view_rect.height), pygame.SRCALPHA)
+        visual_layer.fill((0, 0, 0, 0))
 
         screen.fill(theme["bg"])
         ctx = {
@@ -240,7 +286,18 @@ def run_app(capture, metadata_fn, args, source_label):
             "dt": dt,
             "sensitivity": sensitivity,
         }
-        visualizers[style_index].draw(screen, ctx)
+        visualizers[style_index].draw(visual_layer, ctx)
+
+        if transparency_enabled:
+            energy = float(np.mean(np.clip(bars * sensitivity, 0.0, 1.0)))
+            # T toggles audio-reactive transparency. More sensitivity means a
+            # larger response from nearly transparent on quiet passages to full
+            # opacity on loud passages.
+            alpha = int(np.clip(45.0 + energy * 210.0 * transparency_sensitivity, 25.0, 255.0))
+            visual_layer.set_alpha(alpha)
+        else:
+            visual_layer.set_alpha(255)
+        screen.blit(visual_layer, view_rect.topleft)
 
         _draw_bottom_bar(screen, w, h, theme, font_big, font_small,
                           meta_worker.get_display_position(), source_label,
@@ -264,6 +321,8 @@ def run_app(capture, metadata_fn, args, source_label):
         "sensitivity": sensitivity,
         "n_bars": n_bars,
         "fullscreen": fullscreen,
+        "transparency_enabled": transparency_enabled,
+        "transparency_sensitivity": transparency_sensitivity,
     })
     cfgmod.save(cfg)
 
@@ -327,7 +386,7 @@ def _draw_bottom_bar(screen, w, h, theme, font_big, font_small, now_playing, sou
     bar_top = h - BOTTOM_BAR_H
     bg = tuple(min(255, c + 8) for c in theme["bg"])
     pygame.draw.rect(screen, bg, (0, bar_top, w, BOTTOM_BAR_H))
-    pygame.draw.line(screen, theme.get("secondary", theme["primary"]), (0, bar_top), (w, bar_top), 2)
+    pygame.draw.line(screen, theme.get("secondary") or theme.get("primary", (235, 235, 235)), (0, bar_top), (w, bar_top), 2)
 
     text_color = theme.get("text", (255, 255, 255))
 

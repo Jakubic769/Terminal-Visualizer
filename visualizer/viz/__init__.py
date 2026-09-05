@@ -10,6 +10,7 @@ from .dots import DotsGridVisualizer
 from .vu import VuMeterVisualizer
 from .spectrogram import SpectrogramVisualizer
 from .kaleidoscope import KaleidoscopeVisualizer
+from .advanced import GENERATED_VISUALIZERS
 
 VISUALIZERS = [
     BarsVisualizer,
@@ -24,4 +25,5 @@ VISUALIZERS = [
     VuMeterVisualizer,
     SpectrogramVisualizer,
     KaleidoscopeVisualizer,
+    *GENERATED_VISUALIZERS,
 ]
