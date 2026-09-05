@@ -2,7 +2,7 @@
 
 > A colorful real-time music visualizer for your terminal, inspired by [Cava](https://github.com/karlstav/cava).
 
-**12 visualization styles • 8 color themes • live switching • per-app audio selection • track metadata • Linux & Windows**
+**62 visualization styles • 33 color themes • live switching • per-app audio selection • track metadata • Linux & Windows**
 
 ![Terminal Visualizer](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-111827?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
@@ -11,8 +11,8 @@
 ## ✨ Features
 
 - 🎵 Real-time terminal audio visualization
-- 🎨 **12 built-in visualization styles**
-- 🌈 **8 color themes**, including dynamic Rainbow
+- 🎨 **62 visualization styles** (12 core + 50 premium)
+- 🌈 **33 color themes**, including dynamic Rainbow
 - 🎛️ Change styles and themes while the visualizer is running
 - 🎧 Select a specific audio application or visualize the entire system
 - 🎼 Show artist, title, and playback time when metadata is available
@@ -38,7 +38,21 @@
 11. Spectrogram
 12. Kaleidoscope
 
-Switch styles live with `TAB`, `←`, or `→`.
+Switch styles live with `TAB`, `←`, or `→` — the core styles remain available alongside 50 premium, art-directed styles.
+
+### Premium styles
+
+The 50 additional styles are designed as distinct visual compositions rather than simple geometry variations:
+
+`Aurora Ribbon` · `Glass Wave` · `Spectrum Horizon` · `Prism Wave` · `Pulse Rail` · `Luminous Columns` · `Cathedral` · `Monument` · `Blade Array` · `Pillars Pro` · `Orbit Halo` · `Planetary` · `Solar System` · `Eclipse` · `Saturn` · `Pulse Rings` · `Ripple Rings` · `Concentric Glass` · `Core Reactor` · `Quantum Ring` · `Nebula` · `Star Drift` · `Comet Field` · `Particle Bloom` · `Gravity Well` · `Kaleido Prime` · `Kaleido Glass` · `Lotus` · `Mandala` · `Orbit Flower` · `Laser Sweep` · `Radar Bloom` · `Scope` · `Scanner Grid` · `Hologrid` · `Wireframe City` · `Tunnel Glass` · `Infinite Hall` · `Perspective Grid` · `Deep Tunnel` · `Crystal Shards` · `Facet` · `Prism Core` · `Diamond Pulse` · `Fractal Bloom` · `Signal Bloom` · `Oscillo Pro` · `Waveform Pro` · `Frequency Lens` · `Afterglow`.
+
+### Transparency effect
+
+Press `T` to toggle audio-reactive background transparency. Only the background layer changes; bars, waves, particles, rings and other visual elements remain fully opaque.
+
+- `[` / `]` — lower / raise transparency sensitivity
+- `Shift` + `↑` / `↓` — lower / raise transparency sensitivity
+- `↑` / `↓` — change normal audio sensitivity
 
 ## 🌈 Color Themes
 

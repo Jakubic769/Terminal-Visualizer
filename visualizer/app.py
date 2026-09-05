@@ -273,7 +273,19 @@ def run_app(capture, metadata_fn, args, source_label):
         visual_layer = pygame.Surface((view_rect.width, view_rect.height), pygame.SRCALPHA)
         visual_layer.fill((0, 0, 0, 0))
 
-        screen.fill(theme["bg"])
+        # The T effect applies to the background only. Visual elements remain
+        # fully opaque so bars/lines/particles never become faint.
+        if transparency_enabled:
+            energy = float(np.mean(np.clip(bars * sensitivity, 0.0, 1.0)))
+            # Quiet audio -> more transparent background; loud audio -> more opaque.
+            # Sensitivity changes only this background response.
+            bg_alpha = int(np.clip(210.0 - energy * 185.0 * transparency_sensitivity, 35.0, 210.0))
+            bg_layer = pygame.Surface((view_rect.width, view_rect.height), pygame.SRCALPHA)
+            bg_layer.fill((*theme["bg"], bg_alpha))
+            screen.fill((0, 0, 0))
+            screen.blit(bg_layer, view_rect.topleft)
+        else:
+            screen.fill(theme["bg"])
         ctx = {
             "rect": view_rect,
             "bars": bars,
@@ -288,15 +300,9 @@ def run_app(capture, metadata_fn, args, source_label):
         }
         visualizers[style_index].draw(visual_layer, ctx)
 
-        if transparency_enabled:
-            energy = float(np.mean(np.clip(bars * sensitivity, 0.0, 1.0)))
-            # T toggles audio-reactive transparency. More sensitivity means a
-            # larger response from nearly transparent on quiet passages to full
-            # opacity on loud passages.
-            alpha = int(np.clip(45.0 + energy * 210.0 * transparency_sensitivity, 25.0, 255.0))
-            visual_layer.set_alpha(alpha)
-        else:
-            visual_layer.set_alpha(255)
+        # The visualizer layer itself is always opaque. T only changes the
+        # background layer drawn above.
+        visual_layer.set_alpha(255)
         screen.blit(visual_layer, view_rect.topleft)
 
         _draw_bottom_bar(screen, w, h, theme, font_big, font_small,
