@@ -97,9 +97,8 @@ def main():
 
         chosen = _resolve_choice(args, apps)
         if chosen is not None:
-            print(f"Uwaga: na Windows izolacja dzwieku dziala przez wyciszenie innych aplikacji "
-                  f"na czas dzialania wizualizatora (zostana wyciszone tylko na czas dzialania "
-                  f"programu i przywrocone po jego zamknieciu).")
+            print("Uwaga: Windows przechwytuje petle WASAPI domyslnego wyjscia audio. "
+                  "Wizualizator NIE wycisza ani nie zmienia glosnosci zadnej aplikacji.")
         capture = backend.WasapiCapture(app=chosen)
         source_label = chosen["name"] if chosen else "caly system"
 

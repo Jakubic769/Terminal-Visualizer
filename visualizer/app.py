@@ -31,11 +31,6 @@ class AudioWorker(threading.Thread):
         self.error = None
 
     def run(self):
-        try:
-            self.capture.start()
-        except Exception as e:  # noqa: BLE001
-            self.error = e
-            return
         while not self._stop.is_set():
             try:
                 chunk = self.capture.read()
@@ -145,6 +140,13 @@ def run_app(capture, metadata_fn, args, source_label):
     sensitivity = cfg.get("sensitivity", 1.0)
 
     audio_worker = AudioWorker(capture)
+    try:
+        # Start the native audio backend on the main Python thread.
+        # Some PortAudio/WASAPI builds are unreliable when initialization
+        # happens from a worker thread.
+        capture.start()
+    except Exception as exc:  # noqa: BLE001
+        audio_worker.error = exc
     audio_worker.start()
     meta_worker = MetadataWorker(metadata_fn)
     meta_worker.start()
@@ -267,6 +269,14 @@ def run_app(capture, metadata_fn, args, source_label):
 
     audio_worker.stop()
     meta_worker.stop()
+    try:
+        audio_worker.join(timeout=1.0)
+    except RuntimeError:
+        pass
+    try:
+        capture.stop()
+    except Exception:
+        pass
     pygame.quit()
 
 

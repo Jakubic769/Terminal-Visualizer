@@ -155,13 +155,13 @@ List currently available audio applications:
 visualizer --list-apps
 ```
 
-### Windows audio isolation
+### Windows audio capture
 
-Windows does not expose a simple high-level Python API for capturing audio from a single process. When a specific application is selected, the Windows implementation uses WASAPI loopback and temporarily mutes other audio applications so the selected source can be isolated.
+Windows uses WASAPI loopback to capture the audio currently being played by the default output device. Starting the visualizer **never mutes or changes the volume of other applications**.
 
-Original application volumes are restored when the visualizer exits, including after `Ctrl+C`.
+When you choose a specific application, its name is used as the selected source label, but the current Python backend still captures the output mix. True per-process loopback requires the Windows process-loopback API, which is separate from the ordinary device loopback API.
 
-If you do not want application muting, use:
+If you want to visualize the whole system directly, use:
 
 ```bash
 visualizer --all
