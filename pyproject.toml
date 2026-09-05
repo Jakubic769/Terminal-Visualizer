@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visualizer-music"
+version = "1.0.0"
+description = "Cross-platform, per-application music visualizer (cava-style, but with more styles, colors and a now-playing bar)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "pygame>=2.5.0",
+    "PyAudioWPatch>=0.2.12.7; sys_platform == 'win32'",
+    "pycaw>=20240210; sys_platform == 'win32'",
+    "winsdk>=1.0.0b10; sys_platform == 'win32'",
+    "comtypes>=1.2.0; sys_platform == 'win32'",
+]
+
+[project.scripts]
+visualizer = "visualizer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["visualizer*"]
